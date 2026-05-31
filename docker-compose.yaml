@@ -1,0 +1,10 @@
+services:
+  dashboard:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "3800:3000"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    environment:
+      - MAC_IP=192.168.1.18
