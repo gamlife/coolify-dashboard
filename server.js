@@ -5,27 +5,39 @@ const PORT = process.env.PORT || 3000;
 const MAC_IP = process.env.MAC_IP || '192.168.1.18';
 const DOCKER_SOCK = '/var/run/docker.sock';
 
-async function dockerRequest(path) {
+function dockerJSON(path) {
   return new Promise((resolve, reject) => {
     const socket = net.connect(DOCKER_SOCK);
-    const chunks = [];
+    const bufs = [];
+    let done = false;
     socket.on('connect', () => {
       socket.write(`GET ${path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n`);
     });
-    socket.on('data', (d) => chunks.push(d));
+    socket.on('data', (d) => bufs.push(d));
     socket.on('end', () => {
-      const body = Buffer.concat(chunks).toString();
-      const jsonStr = body.split('\r\n\r\n').slice(1).join('\r\n');
-      try { resolve(JSON.parse(jsonStr)); } catch(e) { reject(e); }
+      if (done) return;
+      done = true;
+      const raw = Buffer.concat(bufs).toString();
+      const bodyStart = raw.indexOf('\r\n\r\n');
+      if (bodyStart === -1) return reject(new Error('no body'));
+      const headerStr = raw.substring(0, bodyStart);
+      const body = raw.substring(bodyStart + 4);
+      // Handle chunked encoding
+      const isChunked = headerStr.toLowerCase().includes('transfer-encoding: chunked');
+      let decoded = body;
+      if (isChunked) {
+        decoded = body.replace(/^[0-9a-f]+\r\n/gm, '').replace(/\r\n$/gm, '');
+      }
+      try { resolve(JSON.parse(decoded)); } catch (e) { reject(e); }
     });
     socket.on('error', reject);
-    setTimeout(() => reject(new Error('timeout')), 3000);
+    setTimeout(() => { if (!done) { done = true; reject(new Error('timeout')); } }, 5000);
   });
 }
 
 async function getServices() {
   try {
-    const containers = await dockerRequest('/containers/json');
+    const containers = await dockerJSON('/containers/json');
     return containers
       .filter(c => !c.Names[0].includes('coolify') && !c.Names[0].includes('dashboard'))
       .map(c => {
@@ -38,10 +50,11 @@ async function getServices() {
         const uptime = c.State === 'running'
           ? Math.round((Date.now() - new Date(c.StartedAt * 1000)) / 60000)
           : 0;
-        const uptimeStr = uptime < 60 ? `${uptime}m` : `${Math.floor(uptime/60)}h ${uptime%60}m`;
+        const uptimeStr = uptime < 60 ? `${uptime}m` : `${Math.floor(uptime / 60)}h ${uptime % 60}m`;
         return { name, port, status, image, uptime: uptimeStr };
       });
   } catch (e) {
+    console.error('Docker error:', e.message);
     return [];
   }
 }
@@ -73,10 +86,10 @@ function renderHTML(services) {
     td { padding:0.75rem 1rem; border-top:1px solid #334155; }
     tr:hover td { background:#1e3a5f; }
     code { font-family:monospace; font-size:0.9em; color:#fbbf24; }
-    a { text-decoration:none; }
-    a:hover { text-decoration:underline; }
+    a { text-decoration:none; } a:hover { text-decoration:underline; }
     .time { color:#64748b; font-size:0.8em; margin-top:1.5rem; }
     .panel-link { color:#60a5fa; }
+    .empty { color:#64748b; text-align:center; padding:2rem; }
   </style>
 </head>
 <body>
@@ -84,16 +97,16 @@ function renderHTML(services) {
   <p class="sub">自动发现所有运行中的服务 · <a href="http://${MAC_IP}:9000" class="panel-link">Coolify 面板</a></p>
   <table>
     <tr><th>状态</th><th>服务</th><th>访问地址</th><th>镜像</th><th>运行时间</th></tr>
-    ${rows}
+    ${rows || '<tr><td colspan="5" class="empty">暂无运行中的服务</td></tr>'}
   </table>
-  <p class="time">🔄 自动刷新: 30秒 · 最后更新: ${new Date().toLocaleString('zh-CN', {timeZone:'Asia/Shanghai'})}</p>
+  <p class="time">🔄 自动刷新: 30秒 · 最后更新: ${new Date().toLocaleString('zh-CN', {timeZone: 'Asia/Shanghai'})}</p>
   <script>setTimeout(()=>location.reload(),30000)</script>
 </body></html>`;
 }
 
 const server = http.createServer(async (req, res) => {
   const services = await getServices();
-  res.writeHead(200, {'Content-Type':'text/html;charset=utf-8'});
+  res.writeHead(200, { 'Content-Type': 'text/html;charset=utf-8' });
   res.end(renderHTML(services));
 });
 
