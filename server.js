@@ -1,5 +1,4 @@
 const http = require('http');
-const { createClient } = require('undici');
 const net = require('net');
 
 const PORT = process.env.PORT || 3000;
