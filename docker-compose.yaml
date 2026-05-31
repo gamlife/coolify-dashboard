@@ -2,9 +2,7 @@ services:
   dashboard:
     build: .
     restart: unless-stopped
-    ports:
-      - "3800:3000"
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
+    network_mode: host
     environment:
       - MAC_IP=192.168.1.18
+      - PORT=3800
