@@ -1,14 +1,32 @@
 const http = require('http');
+const { createClient } = require('undici');
+const net = require('net');
 
 const PORT = process.env.PORT || 3000;
 const MAC_IP = process.env.MAC_IP || '192.168.1.18';
+const DOCKER_SOCK = '/var/run/docker.sock';
+
+async function dockerRequest(path) {
+  return new Promise((resolve, reject) => {
+    const socket = net.connect(DOCKER_SOCK);
+    const chunks = [];
+    socket.on('connect', () => {
+      socket.write(`GET ${path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n`);
+    });
+    socket.on('data', (d) => chunks.push(d));
+    socket.on('end', () => {
+      const body = Buffer.concat(chunks).toString();
+      const jsonStr = body.split('\r\n\r\n').slice(1).join('\r\n');
+      try { resolve(JSON.parse(jsonStr)); } catch(e) { reject(e); }
+    });
+    socket.on('error', reject);
+    setTimeout(() => reject(new Error('timeout')), 3000);
+  });
+}
 
 async function getServices() {
   try {
-    const res = await fetch('http://localhost:2375/containers/json?all=false', {
-      signal: AbortSignal.timeout(3000)
-    });
-    const containers = await res.json();
+    const containers = await dockerRequest('/containers/json');
     return containers
       .filter(c => !c.Names[0].includes('coolify') && !c.Names[0].includes('dashboard'))
       .map(c => {
@@ -18,7 +36,7 @@ async function getServices() {
         const port = mapped ? mapped.PublicPort : null;
         const status = c.State === 'running' ? '🟢' : '🔴';
         const image = c.Image;
-        const uptime = c.State === 'running' 
+        const uptime = c.State === 'running'
           ? Math.round((Date.now() - new Date(c.StartedAt * 1000)) / 60000)
           : 0;
         const uptimeStr = uptime < 60 ? `${uptime}m` : `${Math.floor(uptime/60)}h ${uptime%60}m`;
